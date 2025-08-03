@@ -92,8 +92,8 @@ func main() {
 
 	// Use a reasonable number of workers for large file counts
 	workerCount := 150
-	if len(keys) < 100 {
-		workerCount = 5
+	if len(keys) < 1000 {
+		workerCount = 25
 	}
 
 	fmt.Printf("🔧 Starting %d workers for %d files\n", workerCount, len(keys))
