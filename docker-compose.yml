@@ -1,0 +1,59 @@
+services:
+  # MySQL Database
+  mysql:
+    image: mysql:8.0
+    container_name: s3_move_db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: s3_documents
+      MYSQL_USER: s3user
+      MYSQL_PASSWORD: s3password
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./init-db:/docker-entrypoint-initdb.d
+    networks:
+      - s3_network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 20s
+      retries: 10
+
+  # Go Application
+  s3-mover:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: s3_move_app
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      # Database connection
+      MYSQL_DSN: s3user:s3password@tcp(mysql:3306)/s3_documents
+
+      # Source S3 credentials
+      SRC_ACCESS_KEY: ${SRC_ACCESS_KEY}
+      SRC_SECRET_KEY: ${SRC_SECRET_KEY}
+      SRC_REGION: ${SRC_REGION}
+      SRC_BUCKET: ${SRC_BUCKET}
+
+      # Destination S3 credentials
+      DST_ACCESS_KEY: ${DST_ACCESS_KEY}
+      DST_SECRET_KEY: ${DST_SECRET_KEY}
+      DST_REGION: ${DST_REGION}
+      DST_BUCKET: ${DST_BUCKET}
+    networks:
+      - s3_network
+    volumes:
+      - ./logs:/app/logs
+
+volumes:
+  mysql_data:
+
+networks:
+  s3_network:
+    driver: bridge
