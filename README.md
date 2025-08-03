@@ -8,7 +8,7 @@ A production-ready Go application that efficiently transfers documents between S
 - **Zero local storage usage** - direct S3-to-S3 transfers
 - **Server-side copy optimization** - Instant transfers when possible
 - **Streaming fallback** - Reliable transfer for cross-account scenarios
-- **Concurrent processing** - 5 worker threads for optimal performance
+- **Concurrent processing** - 150 worker threads for optimal performance
 - **Production database logging** - Complete audit trail
 - **Docker containerization** - Easy deployment and scaling
 - **Comprehensive error handling** - Graceful failures with detailed logging
