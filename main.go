@@ -185,7 +185,7 @@ func worker(ctx context.Context, src, dst *s3.Client, srcBucket, dstBucket strin
 	defer wg.Done()
 	for job := range jobs {
 		fileStartTime := time.Now()
-		err := moveObject(ctx, src, dst, srcBucket, dstBucket, job.Key, stats, mu)
+		fileSize, err := moveObject(ctx, src, dst, srcBucket, dstBucket, job.Key, stats, mu)
 
 		status := "success"
 		msg := "moved"
@@ -201,20 +201,32 @@ func worker(ctx context.Context, src, dst *s3.Client, srcBucket, dstBucket strin
 		mu.Unlock()
 
 		duration := time.Since(fileStartTime)
-		logToDB(db, job.Key, status, msg)
+
+		// Include file size in the log message
+		msgWithSize := fmt.Sprintf("%s (%.2f MB, %v)", msg, float64(fileSize)/(1024*1024), duration)
+		logToDB(db, job.Key, status, msgWithSize)
 
 		if err != nil {
 			fmt.Printf("❌ Failed: %s (took %v) - %s\n", job.Key, duration, err.Error())
 		}
-
 	}
 }
 
-func moveObject(ctx context.Context, src, dst *s3.Client, srcBucket, dstBucket, key string, stats *TransferStats, mu *sync.Mutex) error {
+func moveObject(ctx context.Context, src, dst *s3.Client, srcBucket, dstBucket, key string, stats *TransferStats, mu *sync.Mutex) (int64, error) {
+	// Get file size first for both server-side copy and streaming
+	headObj, err := src.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(srcBucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return 0, fmt.Errorf("head object error: %w", err)
+	}
+
+	fileSize := *headObj.ContentLength
 
 	copySource := fmt.Sprintf("%s/%s", srcBucket, key)
 
-	_, err := src.CopyObject(ctx, &s3.CopyObjectInput{
+	_, err = src.CopyObject(ctx, &s3.CopyObjectInput{
 		Bucket:            aws.String(dstBucket),
 		Key:               aws.String(key),
 		CopySource:        aws.String(copySource),
@@ -228,12 +240,13 @@ func moveObject(ctx context.Context, src, dst *s3.Client, srcBucket, dstBucket, 
 
 	mu.Lock()
 	stats.Method["server-side"]++
+	stats.TotalSizeBytes += fileSize
 	mu.Unlock()
 
-	return nil
+	return fileSize, nil
 }
 
-func moveObjectFallback(ctx context.Context, src, dst *s3.Client, srcBucket, dstBucket, key string, stats *TransferStats, mu *sync.Mutex) error {
+func moveObjectFallback(ctx context.Context, src, dst *s3.Client, srcBucket, dstBucket, key string, stats *TransferStats, mu *sync.Mutex) (int64, error) {
 	fmt.Printf("🌊 Streaming: %s from %s to %s (no local storage)\n", key, srcBucket, dstBucket)
 
 	headObj, err := src.HeadObject(ctx, &s3.HeadObjectInput{
@@ -241,7 +254,7 @@ func moveObjectFallback(ctx context.Context, src, dst *s3.Client, srcBucket, dst
 		Key:    aws.String(key),
 	})
 	if err != nil {
-		return fmt.Errorf("head object error: %w", err)
+		return 0, fmt.Errorf("head object error: %w", err)
 	}
 
 	fileSize := *headObj.ContentLength
@@ -252,7 +265,7 @@ func moveObjectFallback(ctx context.Context, src, dst *s3.Client, srcBucket, dst
 	mu.Unlock()
 
 	if fileSize > 5*1024*1024*1024 {
-		return fmt.Errorf("file too large (%d bytes / %.2f GB) - exceeds 5GB single PUT limit. Please use AWS CLI 'aws s3 cp' for files >5GB", fileSize, float64(fileSize)/(1024*1024*1024))
+		return fileSize, fmt.Errorf("file too large (%d bytes / %.2f GB) - exceeds 5GB single PUT limit. Please use AWS CLI 'aws s3 cp' for files >5GB", fileSize, float64(fileSize)/(1024*1024*1024))
 	}
 
 	obj, err := src.GetObject(ctx, &s3.GetObjectInput{
@@ -260,7 +273,7 @@ func moveObjectFallback(ctx context.Context, src, dst *s3.Client, srcBucket, dst
 		Key:    aws.String(key),
 	})
 	if err != nil {
-		return fmt.Errorf("get error: %w", err)
+		return fileSize, fmt.Errorf("get error: %w", err)
 	}
 	defer obj.Body.Close()
 
@@ -275,7 +288,7 @@ func moveObjectFallback(ctx context.Context, src, dst *s3.Client, srcBucket, dst
 		Metadata:      headObj.Metadata,
 	})
 	if err != nil {
-		return fmt.Errorf("streaming put error: %w", err)
+		return fileSize, fmt.Errorf("streaming put error: %w", err)
 	}
 
 	mu.Lock()
@@ -283,7 +296,7 @@ func moveObjectFallback(ctx context.Context, src, dst *s3.Client, srcBucket, dst
 	mu.Unlock()
 
 	fmt.Printf("✅ Successfully streamed: %s (%.2f MB - no local storage)\n", key, float64(fileSize)/(1024*1024))
-	return nil
+	return fileSize, nil
 }
 
 func writeSummaryLog(stats *TransferStats, srcBucket, dstBucket string, workerCount int) {
